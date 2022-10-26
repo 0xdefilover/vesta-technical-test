@@ -9,6 +9,7 @@ contract Staking is AccessControl {
     struct LockInfo {
         uint256 lastUpdatedTime;
         uint256 totalLockedAmount;
+        uint256 releasedAmount;
         uint256 unlockPerMonth;
     }
 
@@ -42,11 +43,18 @@ contract Staking is AccessControl {
         require(!blacklist[msg.sender], "Your wallet is blacklisted");
         _;
     }
+    
+    /**
+     * @dev Returns the staked amount
+     */
+    function balanceOf(address _account) external view returns (uint256) {
+        return balances[_account];
+    }
 
     /**
      * @dev Setup admin role fro multisig wallet
      */
-    function setupAdminRole(address _admin) public onlyRole(OWNER_ROLE) {
+    function setupAdminRole(address _admin) external onlyRole(OWNER_ROLE) {
         _grantRole(ADMIN_ROLE, _admin);
     }
 
@@ -57,27 +65,29 @@ contract Staking is AccessControl {
     /**
      * @dev Admins can do an emergency panic to unlock all the locked tokens
      */
-    function unlockAllToken() external onlyRole(ADMIN_ROLE) {
+    function emergencyPanic() external onlyRole(ADMIN_ROLE) {
         emergPanic = true;
     }
 
     function stake(uint256 _amount) external {
-        require(_amount > 0, "Invalid amount");
+        require(_amount > 0, "Amount must be greater than 0");
         balances[msg.sender] += _amount;
         token.transferFrom(msg.sender, address(this), _amount);
+
         emit Staked(msg.sender, _amount);
     }
 
-    function unStake(address _to, uint256 _amount) external {
-        require(_amount > 0, "Invalid amount");
+    function unstake(address _to, uint256 _amount) external {
+        require(_amount > 0, "Amount must be greater than 0");
         require(balances[_to] >= _amount, "Insufficient amount");
         balances[_to] -= _amount;
         token.transfer(_to, _amount);
+
         emit Unstaked(msg.sender, _to, _amount);
     }
 
     function lock(uint256 _duration, uint256 _amount) external notBlacklisted {
-        require(_amount > 0, "Invalid amount");
+        require(_amount > 0, "Amount must be greater than 0");
         require(_duration >= ONE_YEAR, "Lock duration should be over one year");
 
         bytes32 lockId = nextLockIdForHolder(msg.sender);
@@ -85,11 +95,13 @@ contract Staking is AccessControl {
         locked[lockId] = LockInfo(
             block.timestamp,
             _amount,
+            0,
             _amount * ONE_MONTH / _duration
         );
-        token.transferFrom(msg.sender, address(this), _amount);
         uint256 currentLockCount = lockCount[msg.sender];
         lockCount[msg.sender] = currentLockCount + 1;
+
+        token.transferFrom(msg.sender, address(this), _amount);
 
         emit Locked(msg.sender, lockId);
     }
@@ -122,7 +134,9 @@ contract Staking is AccessControl {
             lockInfo.lastUpdatedTime += unlockedMonths * ONE_MONTH;
         }
 
+        lockInfo.releasedAmount += unlockAmount;
         token.transfer(msg.sender, unlockAmount);
+        
         emit Claimed(msg.sender, unlockAmount);
     }
 
