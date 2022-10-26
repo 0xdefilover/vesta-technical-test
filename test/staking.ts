@@ -3,7 +3,7 @@ import { expect } from "chai";
 import { ethers } from "hardhat";
 
 describe("Staking & Lock test suite", () => {
-    const { parseUnits, formatUnits } = ethers.utils;
+    const { parseUnits } = ethers.utils;
     // We define a fixture to reuse the same setup in every test.
     async function deployStakingFixture() {
         const [owner, admin, user1, user2, user3] = await ethers.getSigners();

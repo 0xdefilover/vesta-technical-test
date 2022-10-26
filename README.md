@@ -1,13 +1,10 @@
-# Sample Hardhat Project
+# Vesta Technical Test
 
-This project demonstrates a basic Hardhat use case. It comes with a sample contract, a test for that contract, and a script that deploys that contract.
-
-Try running some of the following tasks:
+This project has two modules: Staking & Lucky Card
 
 ```shell
-npx hardhat help
+npm i
+npx hardhat compile
 npx hardhat test
-REPORT_GAS=true npx hardhat test
-npx hardhat node
 npx hardhat run scripts/deploy.ts
 ```

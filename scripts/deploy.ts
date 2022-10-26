@@ -5,6 +5,8 @@ async function main() {
     const token = await Token.deploy("Test Token", "TEST");
     await token.deployed();
 
+    console.log(`Token contract deployed to ${token.address}`);
+
     const Staking = await ethers.getContractFactory("Staking");
     const staking = await Staking.deploy(token.address);
 
