@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.9;
 
-import "@openzeppelin/contracts/utils/Counters.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
 import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
 import "@chainlink/contracts/src/v0.8/ConfirmedOwner.sol";
@@ -13,44 +12,42 @@ contract Card is VRFConsumerBaseV2, ConfirmedOwner {
         bool fulfilled; // whether the request has been successfully fulfilled
         bool exists; // whether a requestId exists
         uint256[] randomWords;
-        uint256 cardId;
+        bytes32 cardId;
         uint256 tokenAmount;
     }
     
     struct CardInfo {
         uint256 timestamp;
-        uint256 cardId;
         uint256 cardPower;
         bool forSale;
         uint256 cardPrice;
     }
 
-    using Counters for Counters.Counter;
-
     event RequestFulfilled(uint256 requestId, uint256[] randomWords);
-    event Created(address indexed from, uint256 indexed cardId, uint256 amount);
-    event Banished(address indexed to, uint256 indexed cardId, uint256 amount);
-    event Listed(address indexed from, uint256 indexed cardId, uint256 cardPrice);
-    event Purchased(address indexed from, address indexed to, uint256 indexed cardId, uint256 cardPrice);
+    event Created(address indexed from, bytes32 cardId, uint256 amount);
+    event Banished(address indexed to, bytes32 cardId, uint256 amount);
+    event Listed(address indexed from, bytes32 cardId, uint256 cardPrice);
+    event Purchased(address indexed from, address indexed to, bytes32 cardId, uint256 cardPrice);
 
     uint8[4] public symbols = [0, 2, 4, 7];
+    uint8[3] public colors = [1, 2, 3];
+
     IToken public token;
-    Counters.Counter private currentCardId;
-    mapping(address => mapping(uint256 => CardInfo)) private cards;
-    mapping(uint256 => address) private owners;
+    mapping(bytes32 => CardInfo) private cards;
+    /// @dev The users can have more than once. This is a mapping from address to index
+    mapping(address => uint256) private cardCount;
     mapping(uint256 => RequestStatus) public s_requests; /* requestId --> requestStatus */
-    VRFCoordinatorV2Interface COORDINATOR;
+    VRFCoordinatorV2Interface immutable COORDINATOR;
 
     // Your subscription ID.
-    uint64 s_subscriptionId;
+    uint64 immutable s_subscriptionId;
 
     // past requests Id.
     uint256[] public requestIds;
     uint256 public lastRequestId;
 
     // Goerli 30 gwei Key Hash
-    bytes32 keyHash =
-        0x79d3d8832d904592c0bf9818b621522c988bb8b0c05cdc3b15aea1b6e8db0c15;
+    bytes32 immutable keyHash;
 
     // Have to calculate something in callback function so set it 1M
     uint32 callbackGasLimit = 1_000_000;
@@ -62,13 +59,14 @@ contract Card is VRFConsumerBaseV2, ConfirmedOwner {
     /**
      * COORDINATOR Address FOR GOERLI: 0x2Ca8E0C643bDe4C2E08ab1fA0da3401AdAD7734D
      */
-    constructor(uint64 _subscriptionId, address _coordinatorAddress, address _token)
+    constructor(uint64 _subscriptionId, address _coordinatorAddress, bytes32 _keyHash, address _token)
         VRFConsumerBaseV2(_coordinatorAddress)
         ConfirmedOwner(msg.sender)
     {
         token = IToken(_token);
         COORDINATOR = VRFCoordinatorV2Interface(_coordinatorAddress);
         s_subscriptionId = _subscriptionId;
+        keyHash = _keyHash;
     }
 
     /// @dev Assumes the subscription is funded sufficiently.
@@ -77,8 +75,8 @@ contract Card is VRFConsumerBaseV2, ConfirmedOwner {
         returns (uint256 requestId)
     {
         require(_amount > 0, "Amount must be greater than 0");
-        currentCardId.increment();
-        owners[currentCardId.current()] = msg.sender;
+
+        bytes32 cardId = nextCardIdForHolder(msg.sender);
         // Will revert if subscription is not set and funded.
         requestId = COORDINATOR.requestRandomWords(
             keyHash,
@@ -91,63 +89,49 @@ contract Card is VRFConsumerBaseV2, ConfirmedOwner {
             randomWords: new uint256[](0),
             exists: true,
             fulfilled: false,
-            cardId: currentCardId.current(),
+            cardId: cardId,
             tokenAmount: _amount
         });
         requestIds.push(requestId);
         lastRequestId = requestId;
 
+        uint256 currentLockCount = cardCount[msg.sender];
+        cardCount[msg.sender] = currentLockCount + 1;
+
         token.transferFrom(msg.sender, address(this), _amount);
 
-        emit Created(msg.sender, currentCardId.current(), _amount);
+        emit Created(msg.sender, cardId, _amount);
         return requestId;
     }
 
-    function banishCard(uint256 _cardId) external {
-        CardInfo storage cardInfo = cards[msg.sender][_cardId];
-        require(cardInfo.cardId == _cardId, "Card ID is wrong");
+    function banishCard(uint256 _index) external {
+        bytes32 cardId = cardIdForAddressAndIndex(msg.sender, _index);
+        CardInfo storage cardInfo = cards[cardId];
+        require(cardInfo.cardPower > 0, "This card does not exist");
         
         uint256 amount = cardInfo.cardPower * 100 * ((block.timestamp - cardInfo.timestamp) / 1 days + 1);
+
         require(token.balanceOf(address(this)) >= amount, "Insufficient token amount");
 
         token.transfer(msg.sender, amount);
         
-        delete owners[_cardId];
-        delete cards[msg.sender][_cardId];
+        delete cards[cardId];
 
-        emit Banished(msg.sender, _cardId, amount);
+        emit Banished(msg.sender, cardId, amount);
     }
 
     /**
      * @dev Lists a card on the third-party marketplace
      */
-    function listCard(uint256 _cardId, uint256 _cardPrice) external {
-        CardInfo storage cardInfo = cards[msg.sender][_cardId];
-        require(cardInfo.cardId == _cardId, "Card ID is wrong");
+    function listCard(uint256 _index, uint256 _cardPrice) external {
+        bytes32 cardId = cardIdForAddressAndIndex(msg.sender, _index);
+        CardInfo storage cardInfo = cards[cardId];
+        require(cardInfo.cardPower > 0, "This card does not exist");
 
         cardInfo.forSale = true;
         cardInfo.cardPrice = _cardPrice;
 
-        emit Listed(msg.sender, _cardId, _cardPrice);
-    }
-
-    /**
-     * @dev Purchase a card listed on the third-party marketplace
-     */
-    function buyCard(uint256 _cardId) external {
-        address seller = owners[_cardId];
-        require(seller != address(0), "Card ID is wrong");
-        
-        CardInfo storage cardInfo = cards[seller][_cardId];
-        require(cardInfo.forSale && cardInfo.cardPrice > 0, "This card is not for sale");
-
-        cards[msg.sender][_cardId] = cardInfo;
-        cards[msg.sender][_cardId].forSale = false;
-        delete cards[seller][_cardId];
-        owners[_cardId] = msg.sender;
-        token.transferFrom(msg.sender, seller, cards[msg.sender][_cardId].cardPrice);
-
-        emit Purchased(seller, msg.sender, _cardId, cards[msg.sender][_cardId].cardPrice);
+        emit Listed(msg.sender, cardId, _cardPrice);
     }
 
     function fulfillRandomWords(
@@ -157,12 +141,14 @@ contract Card is VRFConsumerBaseV2, ConfirmedOwner {
         require(s_requests[_requestId].exists, "request not found");
         s_requests[_requestId].fulfilled = true;
         s_requests[_requestId].randomWords = _randomWords;
-        uint256 cardId = s_requests[_requestId].cardId;
+        bytes32 cardId = s_requests[_requestId].cardId;
         uint256 tokenAmount = s_requests[_requestId].tokenAmount;
-        cards[msg.sender][cardId] = CardInfo(
+        uint256 evolution = _randomWords[3] % 100 + 1; // pick a random number between 1 and 100
+        uint256 tierNumber = _randomWords[2] % 5 + 1; // pick a random number between 1 and 5
+
+        cards[cardId] = CardInfo(
             uint64(block.timestamp),
-            cardId,
-            _randomWords[3] * (tokenAmount * (_randomWords[2] + _randomWords[0] + symbols[_randomWords[1]-1])) / 100,
+            evolution * (tokenAmount * (tierNumber + colors[_randomWords[0] % 3] + symbols[_randomWords[1] % 4])) / 100,
             false,
             0
         );
@@ -177,5 +163,29 @@ contract Card is VRFConsumerBaseV2, ConfirmedOwner {
         require(s_requests[_requestId].exists, "request not found");
         RequestStatus memory request = s_requests[_requestId];
         return (request.fulfilled, request.randomWords);
+    }
+
+    function getCardPower(uint256 _index) external view returns (uint256) {
+        bytes32 cardId = cardIdForAddressAndIndex(msg.sender, _index);
+        return cards[cardId].cardPower;
+    }
+
+    /**
+     * @dev Computes the next card identifier for a given user address.
+     */
+    function nextCardIdForHolder(address _user) public view returns(bytes32) {
+        return cardIdForAddressAndIndex(
+            _user,
+            cardCount[_user]
+        );
+    }
+    /**
+     * @dev Computes the card identifier for an address and an index.
+     */
+    function cardIdForAddressAndIndex(
+        address _user,
+        uint256 _index
+    ) public pure returns (bytes32) {
+        return keccak256(abi.encodePacked(_user, _index));
     }
 }
