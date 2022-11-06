@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.9;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "./interfaces/IToken.sol";
+import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
+import { IToken } from "./interfaces/IToken.sol";
 
 contract Staking is AccessControl {
 
